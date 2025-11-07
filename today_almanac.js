@@ -63,7 +63,7 @@
     { name: "新年夜", month: 12, day: 31 }
   ];
 
-  // 💡 计算倒计时
+  // 💡 计算倒计时天数
   const calcDays = (m, d) => {
     let target = new Date(today.getFullYear(), m - 1, d);
     if (target < today) target.setFullYear(today.getFullYear() + 1);
@@ -77,9 +77,9 @@
   const mainCn = cnHolidays.filter(h => h.type === "main");
   const minorCn = cnHolidays.filter(h => h.type === "minor");
 
-  // 🔹 返回面板内容，不显示任何标题，去掉顶部空白
+  // 🔹 返回面板内容，加零宽空格避免顶部空白
   $done({
-    content: `坚持住，就快放假啦！
+    content: `\u200B坚持住，就快放假啦！
 ${formatLine(getNextN(mainCn))}
 今天：${formatLine(getNextN(solarTerms))}
 ${formatLine(getNextN(minorCn))}
