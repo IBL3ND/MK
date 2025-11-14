@@ -1,184 +1,345 @@
-// ---------- 参数处理 ----------
-const args = (() => {
-  try { return JSON.parse($argument || "{}"); } catch (e) {
-    const q = ($argument || "").split("&").reduce((o, kv) => {
-      const [k, v] = kv.split("=");
-      if (k) o[k] = decodeURIComponent(v || "");
-      return o;
-    }, {});
-    return q;
-  }
-})();
+// Egern TestFlight 实时监控模块
+// 支持参数配置和持续监控
 
-const CONFIG = {
+const DEFAULT_CONFIG = {
   enableNotification: true,
-  notifyWhenUnavailable: (args.notifyWhenUnavailable === "true"),
+  notifyWhenUnavailable: false,
   perRequestTimeout: 8000,
-  apps: [],
-  ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-  intervalSeconds: Number(args.intervalSeconds) || 60
+  checkInterval: 10, // 检查间隔（秒）
+  maxRunTime: 3600, // 最大运行时间（秒）
+  ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 };
 
-if (args.ids) {
-  CONFIG.apps = args.ids
-    .split(",")
-    .map(s => s.trim())
-    .filter(s => s.length > 0)
-    .map(id => ({ id }));
-}
+let startTime = Date.now();
+let totalChecks = 0;
+let config = Object.assign({}, DEFAULT_CONFIG);
 
-// ---------- 通知（增强版，保证 Egern 异步通知生效） ----------
-function sendNotification(title, subtitle, message, url) {
-  if (!CONFIG.enableNotification) return;
-  try {
-    setTimeout(() => {
-      if (typeof $notification !== "undefined") {
-        $notification.post(title, subtitle, message, { url });
-      } else {
-        console.log("[通知] " + title + " | " + subtitle + " | " + message + " | " + url);
-      }
-    }, 0);
-  } catch (e) {
-    console.log("通知发送失败: " + e);
+// 解析参数
+function parseArguments() {
+  if (typeof $argument === "undefined" || !$argument) {
+    console.log("⚠️ 未提供参数，使用默认配置");
+    return;
+  }
+  
+  console.log("📝 原始参数: " + $argument);
+  
+  // 解析参数
+  const params = {};
+  $argument.split("&").forEach(pair => {
+    const [key, value] = pair.split("=");
+    if (key && value) {
+      params[key.trim()] = decodeURIComponent(value.trim());
+    }
+  });
+  
+  console.log("✅ 解析后参数:", JSON.stringify(params));
+  
+  // 读取配置
+  if (params.notifyWhenUnavailable === "true") {
+    config.notifyWhenUnavailable = true;
+  }
+  
+  if (params.interval && !isNaN(params.interval)) {
+    config.checkInterval = Math.max(5, parseInt(params.interval));
+  }
+  
+  if (params.maxRunTime && !isNaN(params.maxRunTime)) {
+    config.maxRunTime = parseInt(params.maxRunTime) * 60;
+  }
+  
+  if (params.timeout && !isNaN(params.timeout)) {
+    config.perRequestTimeout = parseInt(params.timeout) * 1000;
   }
 }
 
-// ---------- HTTP ----------
-function httpGetPromise(url) {
-  return new Promise((resolve, reject) => {
-    let finished = false;
-    const timer = setTimeout(() => {
+// 获取 TestFlight ID 列表
+function getAppIds() {
+  let ids = [];
+  
+  if (typeof $argument !== "undefined" && $argument) {
+    const params = {};
+    $argument.split("&").forEach(pair => {
+      const [key, value] = pair.split("=");
+      if (key && value) {
+        params[key.trim()] = decodeURIComponent(value.trim());
+      }
+    });
+    
+    if (params.ids) {
+      ids = params.ids.split(",").map(id => id.trim()).filter(id => id);
+    }
+  }
+  
+  if (ids.length === 0) {
+    console.log("⚠️ 未提供 TestFlight ID，使用示例 ID");
+    ids = ["wUz8czx3"];
+  }
+  
+  console.log("📱 TestFlight IDs:", ids);
+  return ids.map(id => ({ id }));
+}
+
+// 发送通知
+function sendNotification(title, subtitle, message, url) {
+  if (!config.enableNotification) return;
+  
+  try {
+    if (typeof $notification !== "undefined") {
+      $notification.post(title, subtitle, message, { url });
+      console.log(`✅ 通知已发送: ${title}`);
+    } else if (typeof $notify !== "undefined") {
+      $notify(title, subtitle, message, { url });
+      console.log(`✅ 通知已发送: ${title}`);
+    } else {
+      console.log("⚠️ 通知功能不可用");
+    }
+  } catch (e) {
+    console.log(`❌ 通知发送失败: ${e}`);
+  }
+}
+
+// HTTP GET 请求
+function httpGet(url, cb) {
+  let finished = false;
+  const timer = setTimeout(() => {
+    if (finished) return;
+    finished = true;
+    cb(new Error("请求超时"));
+  }, config.perRequestTimeout);
+
+  const opts = {
+    url: url,
+    headers: {
+      "User-Agent": config.ua,
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+    }
+  };
+
+  // 优先使用 $httpClient
+  if (typeof $httpClient !== "undefined") {
+    $httpClient.get(opts, (err, resp, body) => {
       if (finished) return;
+      clearTimeout(timer);
       finished = true;
-      reject(new Error("request timeout"));
-    }, CONFIG.perRequestTimeout);
+      cb(err, resp || {}, body || "");
+    });
+    return;
+  }
 
-    const opts = { url, headers: { "User-Agent": CONFIG.ua, Accept: "text/html" } };
+  // Quantumult X
+  if (typeof $task !== "undefined") {
+    $task.fetch(opts).then(resp => {
+      if (finished) return;
+      clearTimeout(timer);
+      finished = true;
+      cb(null, { statusCode: resp.statusCode }, resp.body || "");
+    }).catch(err => {
+      if (finished) return;
+      clearTimeout(timer);
+      finished = true;
+      cb(err);
+    });
+    return;
+  }
 
-    if (typeof $httpClient !== "undefined") {
-      try {
-        $httpClient.get(opts, function (err, resp, body) {
-          if (finished) return;
-          clearTimeout(timer);
-          finished = true;
-          if (err) return reject(err);
-          resolve({
-            statusCode: resp?.status || resp?.statusCode || 0,
-            headers: resp?.headers,
-            body: typeof body === "string" ? body : body?.toString ? body.toString() : ""
-          });
-        });
-        return;
-      } catch (e) {}
-    }
-
-    if (typeof $task !== "undefined") {
-      $task.fetch(opts).then(res => {
+  // Fetch API
+  if (typeof fetch !== "undefined") {
+    fetch(url, { headers: opts.headers })
+      .then(res => res.text().then(txt => ({ status: res.status, body: txt })))
+      .then(result => {
         if (finished) return;
         clearTimeout(timer);
         finished = true;
-        resolve({
-          statusCode: res.statusCode || res.status,
-          headers: res.headers,
-          body: res.body || ""
-        });
-      }).catch(err => {
+        cb(null, { statusCode: result.status }, result.body);
+      })
+      .catch(err => {
         if (finished) return;
         clearTimeout(timer);
         finished = true;
-        reject(err);
+        cb(err);
       });
-      return;
+    return;
+  }
+
+  clearTimeout(timer);
+  cb(new Error("无可用的 HTTP 客户端"));
+}
+
+// 检查单个应用
+function checkApp(app, done) {
+  const url = `https://testflight.apple.com/join/${app.id}`;
+  const checkNum = totalChecks + 1;
+  const currentTime = new Date().toLocaleTimeString("zh-CN");
+  
+  console.log(`\n🔍 [检查 #${checkNum}] ${app.id} [${currentTime}]`);
+
+  httpGet(url, (err, resp, body) => {
+    if (err) {
+      console.log(`❌ 请求失败: ${err.message}`);
+      if (config.notifyWhenUnavailable) {
+        sendNotification(
+          "TestFlight 检查失败",
+          `App ID: ${app.id}`,
+          `错误: ${err.message}`,
+          url
+        );
+      }
+      return done();
     }
 
-    if (typeof fetch !== "undefined") {
-      fetch(url, { headers: { "User-Agent": CONFIG.ua } })
-        .then(res => res.text().then(txt => {
-          if (finished) return;
-          clearTimeout(timer);
-          finished = true;
-          resolve({ statusCode: res.status, headers: res.headers, body: txt });
-        }))
-        .catch(err => {
-          if (finished) return;
-          clearTimeout(timer);
-          finished = true;
-          reject(err);
-        });
-      return;
+    const statusCode = resp.statusCode || 200;
+    
+    if (statusCode !== 200) {
+      console.log(`⚠️ 异常状态码: ${statusCode}`);
+      if (config.notifyWhenUnavailable) {
+        sendNotification(
+          "TestFlight 访问异常",
+          `App ID: ${app.id}`,
+          `HTTP ${statusCode}`,
+          url
+        );
+      }
+      return done();
     }
 
-    clearTimeout(timer);
-    reject(new Error("no http client available"));
+    const text = (body || "").toLowerCase();
+
+    // 可用关键词
+    const availableKeywords = [
+      "itms-beta://",
+      "open in testflight",
+      "join the beta",
+      "start testing",
+      "accept invite",
+      "加入测试",
+      "开始测试",
+      "在 testflight 中打开"
+    ];
+
+    // 已满关键词
+    const fullKeywords = [
+      "this beta is full",
+      "beta is full",
+      "测试人员已满",
+      "测试已满",
+      "本次测试已满",
+      "名额已满",
+      "无可用名额",
+      "no longer accepting"
+    ];
+
+    let isAvailable = false;
+    let isFull = false;
+
+    for (const keyword of availableKeywords) {
+      if (text.includes(keyword)) {
+        isAvailable = true;
+        break;
+      }
+    }
+
+    for (const keyword of fullKeywords) {
+      if (text.includes(keyword)) {
+        isFull = true;
+        break;
+      }
+    }
+
+    if (isAvailable && !isFull) {
+      console.log(`🎉🎉🎉 ${app.id} 有名额可用！`);
+      sendNotification(
+        "🎉 TestFlight 名额来了！",
+        `App ID: ${app.id}`,
+        `发现时间: ${currentTime}\n点击立即加入测试 →`,
+        url
+      );
+    } else if (isFull) {
+      console.log(`😔 ${app.id} 暂无名额`);
+      if (config.notifyWhenUnavailable) {
+        sendNotification(
+          "TestFlight 暂无名额",
+          `App ID: ${app.id}`,
+          "继续监控中...",
+          url
+        );
+      }
+    } else {
+      console.log(`❓ ${app.id} 状态未知`);
+    }
+
+    done();
   });
 }
 
-// ---------- 判断可用 ----------
-function analyzeBody(body) {
-  const text = (body || "").toLowerCase();
-  const available = [
-    "itms-beta://", "open in testflight", "join the beta",
-    "start testing", "accept invite", "加入测试",
-    "开始测试", "在 testflight 中打开"
-  ];
-  const full = [
-    "this beta is full", "beta is full", "测试人员已满",
-    "测试已满", "本次测试已满", "名额已满", "无可用名额", "full"
-  ];
-  return {
-    isAvailable: available.some(k => text.includes(k)),
-    isFull: full.some(k => text.includes(k))
-  };
+// 检查所有应用
+function checkAllApps(apps, callback) {
+  let idx = 0;
+  
+  function next() {
+    if (idx >= apps.length) {
+      totalChecks++;
+      return callback();
+    }
+    
+    const app = apps[idx++];
+    checkApp(app, next);
+  }
+  
+  next();
 }
 
-// ---------- 单次检查 ----------
-async function checkApp(app) {
-  const url = `https://testflight.apple.com/join/${app.id}`;
-  console.log(`[TF] 检查: ${app.id} (${new Date().toLocaleString()})`);
+// 主函数
+function main() {
+  parseArguments();
+  
+  console.log("=".repeat(60));
+  console.log("🚀 Egern TestFlight 实时监控启动");
+  console.log("=".repeat(60));
+  
+  const apps = getAppIds();
+  console.log(`📋 监控应用数量: ${apps.length}`);
+  console.log(`⏱️  检查间隔: ${config.checkInterval} 秒`);
+  console.log(`⏰ 最大运行: ${config.maxRunTime / 60} 分钟`);
+  console.log(`🔔 通知设置: ${config.enableNotification ? "已启用" : "已禁用"}`);
+  console.log(`📢 无名额通知: ${config.notifyWhenUnavailable ? "已启用" : "已禁用"}`);
+  console.log("=".repeat(60));
 
-  try {
-    const res = await httpGetPromise(url);
-    const { isAvailable, isFull } = analyzeBody(res.body);
-
-    if (isAvailable && !isFull) {
-      console.log(`[TF] ${app.id} 有名额！`);
-      sendNotification("TestFlight 名额可用", `App ID: ${app.id}`, "点击加入测试", url);
-    } else {
-      console.log(`[TF] ${app.id} 暂无名额`);
-      if (CONFIG.notifyWhenUnavailable) {
-        sendNotification("TestFlight 监控", `App ID: ${app.id}`, "当前无名额", url);
+  // 检查是否超时
+  function shouldContinue() {
+    const runTime = (Date.now() - startTime) / 1000;
+    if (runTime >= config.maxRunTime) {
+      console.log("\n" + "=".repeat(60));
+      console.log(`⏰ 已达到最大运行时间 (${config.maxRunTime / 60} 分钟)`);
+      console.log(`📊 总共检查: ${totalChecks} 轮`);
+      console.log("=".repeat(60));
+      
+      if (typeof $done !== "undefined") {
+        $done();
       }
+      return false;
     }
-  } catch (err) {
-    console.log(`[TF] ${app.id} 请求失败: ${err}`);
-    if (CONFIG.notifyWhenUnavailable) {
-      sendNotification("TestFlight 监控", `App ID: ${app.id}`, `请求失败: ${err}`, url);
-    }
+    return true;
   }
-}
 
-// ---------- sleep ----------
-function sleep(ms) {
-  return new Promise(res => setTimeout(res, ms));
-}
-
-// ---------- 主循环（实时监控 + 不阻塞） ----------
-async function monitorLoop() {
-  console.log(`[TF] 实时监控启动（间隔 ${CONFIG.intervalSeconds}s）`);
-
-  while (true) {
-    for (const app of CONFIG.apps) {
-      checkApp(app); // 不 await → 保持异步，防调度
-    }
-    await sleep(CONFIG.intervalSeconds * 1000);
+  // 循环检查
+  function loop() {
+    if (!shouldContinue()) return;
+    
+    const runTime = Math.floor((Date.now() - startTime) / 1000);
+    console.log(`\n⏰ 已运行: ${runTime}秒 | 已检查: ${totalChecks} 轮`);
+    
+    checkAllApps(apps, () => {
+      if (!shouldContinue()) return;
+      
+      console.log(`💤 等待 ${config.checkInterval} 秒...`);
+      setTimeout(loop, config.checkInterval * 1000);
+    });
   }
+
+  // 开始循环
+  loop();
 }
 
-// ---------- 永不退出的心跳（防止 Egern 判定脚本结束） ----------
-function keepAliveLoop() {
-  setInterval(() => {}, 1000);
-}
-
-// ---------- 启动 ----------
-keepAliveLoop();
-monitorLoop();
+// 启动
+main();
