@@ -27,17 +27,21 @@ if (args.ids) {
     .map(id => ({ id }));
 }
 
-
-// ---------- 通知 ----------
+// ---------- 通知（增强版，保证 Egern 异步通知生效） ----------
 function sendNotification(title, subtitle, message, url) {
-  if (!CONFIG.enableNotification || typeof $notification === "undefined") return;
+  if (!CONFIG.enableNotification) return;
   try {
-    $notification.post(title, subtitle, message, { url });
+    setTimeout(() => {
+      if (typeof $notification !== "undefined") {
+        $notification.post(title, subtitle, message, { url });
+      } else {
+        console.log("[通知] " + title + " | " + subtitle + " | " + message + " | " + url);
+      }
+    }, 0);
   } catch (e) {
     console.log("通知发送失败: " + e);
   }
 }
-
 
 // ---------- HTTP ----------
 function httpGetPromise(url) {
@@ -61,8 +65,7 @@ function httpGetPromise(url) {
           resolve({
             statusCode: resp?.status || resp?.statusCode || 0,
             headers: resp?.headers,
-            body: typeof body === "string" ? body :
-              body?.toString ? body.toString() : ""
+            body: typeof body === "string" ? body : body?.toString ? body.toString() : ""
           });
         });
         return;
@@ -94,11 +97,7 @@ function httpGetPromise(url) {
           if (finished) return;
           clearTimeout(timer);
           finished = true;
-          resolve({
-            statusCode: res.status,
-            headers: res.headers,
-            body: txt
-          });
+          resolve({ statusCode: res.status, headers: res.headers, body: txt });
         }))
         .catch(err => {
           if (finished) return;
@@ -113,7 +112,6 @@ function httpGetPromise(url) {
     reject(new Error("no http client available"));
   });
 }
-
 
 // ---------- 判断可用 ----------
 function analyzeBody(body) {
@@ -132,7 +130,6 @@ function analyzeBody(body) {
     isFull: full.some(k => text.includes(k))
   };
 }
-
 
 // ---------- 单次检查 ----------
 async function checkApp(app) {
@@ -160,31 +157,27 @@ async function checkApp(app) {
   }
 }
 
-
 // ---------- sleep ----------
 function sleep(ms) {
   return new Promise(res => setTimeout(res, ms));
 }
 
-
-// ---------- 主监控循环（永驻 + 不阻塞） ----------
+// ---------- 主循环（实时监控 + 不阻塞） ----------
 async function monitorLoop() {
   console.log(`[TF] 实时监控启动（间隔 ${CONFIG.intervalSeconds}s）`);
 
   while (true) {
     for (const app of CONFIG.apps) {
-      checkApp(app); // 不 await，保持事件循环活跃
+      checkApp(app); // 不 await → 保持异步，防调度
     }
     await sleep(CONFIG.intervalSeconds * 1000);
   }
 }
 
-
-// ---------- 保持事件循环永活，防止 Egern 调度 ----------
+// ---------- 永不退出的心跳（防止 Egern 判定脚本结束） ----------
 function keepAliveLoop() {
-  setInterval(() => {}, 1000);  // 永不退出
+  setInterval(() => {}, 1000);
 }
-
 
 // ---------- 启动 ----------
 keepAliveLoop();
