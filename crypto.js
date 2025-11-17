@@ -3,6 +3,7 @@ let symbols = [
   { symbol: 'ETH', name: '以太坊' },
   { symbol: 'BNB', name: '币安币' },
   { symbol: 'DOGE', name: '狗狗币' },
+  { symbol: 'SOL', name: '索拉纳' },
   { symbol: 'TRX', name: '波场币' }
 ];
 
