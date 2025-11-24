@@ -1,28 +1,36 @@
-// ====== NetISP (Egern Version) ======
-// 不依赖 httpAPI，不使用 Surge API
-// 仅使用 fetch 获取出口IP + ISP 信息
+// NetISP 面板脚本（Egern 兼容）
+// 注意：Egern 不支持 fetch，只能用 $httpClient
 
-let api = $arguments.api || "ipapi";
+function get(url) {
+  return new Promise((resolve, reject) => {
+    $httpClient.get(url, (err, resp, data) => {
+      if (err) reject(err);
+      try {
+        resolve(JSON.parse(data));
+      } catch (e) {
+        reject("JSON 解析失败");
+      }
+    });
+  });
+}
 
-async function run(){
+(async () => {
   try {
-    let url = "";
+    let api = $arguments.api || "ipapi";
 
-    if(api === "ipapi") {
-      url = "https://ipapi.co/json";
-    } else if(api === "sb") {
-      url = "https://api.ip.sb/geoip";
-    } else {
-      url = api; // 自定义 API
-    }
+    let url =
+      api === "sb"
+        ? "https://api.ip.sb/geoip"
+        : api === "ipapi"
+        ? "https://ipapi.co/json"
+        : api; // 自定义 API
 
-    let r = await fetch(url);
-    let j = await r.json();
+    let r = await get(url);
 
-    let ip   = j.ip || j.query || "未知";
-    let isp  = j.org || j.isp || "未知";
-    let city = j.city || "未知";
-    let country = j.country_name || j.country || "未知";
+    let ip = r.ip || r.query || "未知";
+    let isp = r.org || r.organization || r.isp || "未知";
+    let city = r.city || "未知";
+    let country = r.country_name || r.country || "未知";
 
     let content = `IP：${ip}
 ISP：${isp}
@@ -34,8 +42,7 @@ ISP：${isp}
       icon: "network",
       "icon-color": "#4AA3FF"
     });
-
-  } catch(e) {
+  } catch (e) {
     $done({
       title: "NetISP 信息",
       content: "获取失败：" + e,
@@ -43,6 +50,4 @@ ISP：${isp}
       "icon-color": "#FF3B30"
     });
   }
-}
-
-run();
+})();
